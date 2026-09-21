@@ -44,10 +44,11 @@ def upgrade() -> None:
     op.execute("ALTER TABLE invoices ENABLE ROW LEVEL SECURITY;")
     op.execute("ALTER TABLE invoices FORCE ROW LEVEL SECURITY;")
 
-    # Restrictive policy bound to session setting
+    # Permissive policy bound to session setting
     op.execute("""
         CREATE POLICY tenant_isolation_policy ON invoices
-            AS RESTRICTIVE
+            FOR ALL
+            TO PUBLIC
             USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
             WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
     """)
