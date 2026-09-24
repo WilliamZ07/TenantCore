@@ -9,19 +9,18 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "Multi-Tenant SaaS Infrastructure"
     DEBUG: bool = True
 
-    POSTGRES_SERVER: str = "localhost"
+    # Force explicit IPv4 loopback to avoid Windows IPv6 [::1] connection drops
+    POSTGRES_SERVER: str = "127.0.0.1"
     POSTGRES_PORT: int = 5432
     POSTGRES_DB: str = "saas_db"
-    
-    # Superuser URI for migrations
+
     POSTGRES_USER: str = "postgres"
     POSTGRES_PASSWORD: str = "postgres_secret"
 
-    # Runtime app role for RLS isolation
     APP_DB_USER: str = "app_user"
     APP_DB_PASSWORD: str = "app_secret"
 
-    REDIS_HOST: str = "localhost"
+    REDIS_HOST: str = "127.0.0.1"
     REDIS_PORT: int = 6379
 
     @computed_field
