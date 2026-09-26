@@ -1,8 +1,7 @@
 from typing import Annotated
 from fastapi import APIRouter, Depends, status
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.dependencies import get_current_tenant, get_isolated_db
+from app.core.dependencies import get_current_tenant, rate_limit
 from app.core.security import generate_tenant_api_key
 from app.db.session import AsyncSessionFactory
 from app.models.tenant import Tenant
@@ -18,10 +17,6 @@ router = APIRouter(prefix="/tenants", tags=["Tenants"])
     summary="Onboard a new corporate tenant",
 )
 async def register_tenant(payload: TenantCreate):
-    """
-    Provisions a new tenant, hashes the generated API key,
-    and returns the raw secret key exactly once.
-    """
     plaintext_key, key_hash = generate_tenant_api_key()
 
     async with AsyncSessionFactory() as session:
@@ -48,12 +43,9 @@ async def register_tenant(payload: TenantCreate):
     "/me",
     response_model=TenantResponse,
     summary="Get authenticated tenant metadata",
+    dependencies=[Depends(rate_limit(limit=10, window_seconds=60))],
 )
 async def get_authenticated_tenant_profile(
     tenant: Annotated[Tenant, Depends(get_current_tenant)],
 ):
-    """
-    Returns metadata for the calling tenant.
-    Demonstrates zero-trust API key resolution through our dependency chain.
-    """
     return tenant
