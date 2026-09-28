@@ -1,8 +1,9 @@
 from fastapi import FastAPI
-import app.models  # Registers Tenant, Invoice, and Base into SQLAlchemy's mapper
+import app.models  # Registers declarative models into SQLAlchemy
 from app.core.config import settings
 from app.core.redis import get_redis_client
 from app.routers.v1.tenants import router as tenants_router
+from app.routers.v1.invoices import router as invoices_router
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -11,7 +12,9 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
+# Register API routers
 app.include_router(tenants_router, prefix="/api/v1")
+app.include_router(invoices_router, prefix="/api/v1")
 
 
 @app.get("/health", tags=["System"])
