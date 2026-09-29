@@ -1,10 +1,13 @@
 import uuid
 from typing import Annotated
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi.responses import JSONResponse
+from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import get_current_tenant, get_isolated_db, rate_limit
+from app.core.redis import get_redis
 from app.models.invoice import Invoice
 from app.models.tenant import Tenant
 from app.schemas.invoice import (
@@ -14,6 +17,7 @@ from app.schemas.invoice import (
     InvoiceStatusUpdate,
     VALID_TRANSITIONS,
 )
+from app.services.idempotency import IdempotencyService
 
 router = APIRouter(prefix="/invoices", tags=["Invoices"])
 
@@ -22,17 +26,45 @@ router = APIRouter(prefix="/invoices", tags=["Invoices"])
     "",
     response_model=InvoiceResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Create a new invoice",
+    summary="Create a new invoice (idempotent)",
     dependencies=[Depends(rate_limit(limit=30, window_seconds=60))],
 )
 async def create_invoice(
     payload: InvoiceCreate,
     tenant: Annotated[Tenant, Depends(get_current_tenant)],
     db: Annotated[AsyncSession, Depends(get_isolated_db)],
+    redis: Annotated[Redis, Depends(get_redis)],
+    idempotency_key: Annotated[str | None, Header(description="Unique client idempotency key")] = None,
 ):
     """
-    Creates an invoice under the authenticated tenant's RLS scope.
+    Creates an invoice under the authenticated tenant's RLS scope with idempotency support.
     """
+    idempotency_service = IdempotencyService(redis)
+
+    if idempotency_key:
+        # 1. Check for previously cached execution
+        cached = await idempotency_service.get_cached_response(tenant.id, idempotency_key)
+        if cached:
+            if cached.get("status") == "processing":
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="A request with this Idempotency-Key is currently in progress.",
+                )
+            return JSONResponse(
+                status_code=cached["status_code"],
+                content=cached["body"],
+                headers={"X-Cache-Lookup": "HIT - Idempotent Replay"},
+            )
+
+        # 2. Acquire in-flight lock
+        locked = await idempotency_service.lock_key(tenant.id, idempotency_key)
+        if not locked:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A concurrent request with this Idempotency-Key is already running.",
+            )
+
+    # 3. Execute business logic under RLS
     invoice = Invoice(
         tenant_id=tenant.id,
         customer_name=payload.customer_name,
@@ -43,7 +75,27 @@ async def create_invoice(
     db.add(invoice)
     await db.flush()
     await db.refresh(invoice)
-    return invoice
+
+    response_data = {
+        "id": str(invoice.id),
+        "tenant_id": str(invoice.tenant_id),
+        "customer_name": invoice.customer_name,
+        "amount": str(invoice.amount),
+        "currency": invoice.currency,
+        "status": invoice.status,
+        "created_at": invoice.created_at.isoformat(),
+    }
+
+    # 4. Cache response if idempotency key was supplied
+    if idempotency_key:
+        await idempotency_service.store_response(
+            tenant_id=tenant.id,
+            idempotency_key=idempotency_key,
+            status_code=status.HTTP_201_CREATED,
+            response_body=response_data,
+        )
+
+    return response_data
 
 
 @router.get(
