@@ -30,3 +30,14 @@ def verify_api_key(raw_key: str, stored_hash: str) -> bool:
     """
     computed_hash = hash_api_key(raw_key)
     return hmac.compare_digest(computed_hash, stored_hash)
+
+def verify_webhook_signature(payload_bytes: bytes, signature: str, secret: str) -> bool:
+    """
+    Verifies HMAC-SHA256 signature for incoming webhooks using constant-time comparison.
+    """
+    computed_sig = hmac.new(
+        key=secret.encode("utf-8"),
+        msg=payload_bytes,
+        digestmod=hashlib.sha256,
+    ).hexdigest()
+    return hmac.compare_digest(computed_sig, signature.strip())
