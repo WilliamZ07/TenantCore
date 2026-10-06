@@ -1,14 +1,16 @@
 import json
 import uuid
 from typing import Annotated
-from fastapi import APIRouter, Header, HTTPException, Request, status
-from sqlalchemy import select
+from arq.connections import ArqRedis
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.redis import get_redis_client
 from app.core.security import verify_webhook_signature
 from app.db.session import AsyncSessionFactory
+from app.dependencies.queue import get_queue
 from app.models.invoice import Invoice
 from app.schemas.invoice import InvoiceStatus
 
@@ -24,11 +26,15 @@ WEBHOOK_SECRET = "whsec_test_secret_key_998877"
 )
 async def handle_payment_webhook(
     request: Request,
-    x_signature: Annotated[str | None, Header(description="HMAC-SHA256 signature")] = None,
+    x_signature: Annotated[
+        str | None, Header(description="HMAC-SHA256 signature")
+    ] = None,
+    queue: ArqRedis | None = Depends(get_queue),
 ):
     """
     Consumes payment events, verifies cryptographic signature,
-    and applies idempotent status transitions.
+    applies idempotent status transitions under RLS, and enqueues
+    asynchronous outbound webhook notifications.
     """
     raw_body = await request.body()
 
@@ -64,7 +70,10 @@ async def handle_payment_webhook(
         is_new_event = await redis.set(event_key, "1", ex=259200, nx=True)
         if not is_new_event:
             # Event already processed: return 200 immediately to acknowledge receipt
-            return {"status": "success", "detail": "Event already processed (idempotent duplicate)"}
+            return {
+                "status": "success",
+                "detail": "Event already processed (idempotent duplicate)",
+            }
 
         # 3. Process payment confirmation
         if event_type == "payment.succeeded":
@@ -83,9 +92,10 @@ async def handle_payment_webhook(
             # Open session and set context for tenant to update invoice under RLS
             async with AsyncSessionFactory() as session:
                 async with session.begin():
-                    from sqlalchemy import text
                     await session.execute(
-                        text("SELECT set_config('app.current_tenant', :id, true)"),
+                        text(
+                            "SELECT set_config('app.current_tenant', :id, true)"
+                        ),
                         {"id": str(tenant_uuid)},
                     )
 
@@ -102,6 +112,23 @@ async def handle_payment_webhook(
                     # Update status directly to paid
                     invoice.status = InvoiceStatus.PAID.value
                     await session.flush()
+
+                    # 4. Enqueue outbound notification task to arq background queue
+                    if queue:
+                        await queue.enqueue_job(
+                            "dispatch_webhook",
+                            tenant_id=str(tenant_uuid),
+                            event_type="invoice.paid",
+                            payload={
+                                "invoice_id": str(invoice.id),
+                                "amount": float(invoice.amount),
+                                "status": invoice.status,
+                            },
+                            target_url=data.get(
+                                "callback_url", "https://httpbin.org/post"
+                            ),
+                            secret=data.get("webhook_secret", WEBHOOK_SECRET),
+                        )
 
         return {"status": "success", "event_id": event_id}
     finally:
