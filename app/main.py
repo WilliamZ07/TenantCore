@@ -4,19 +4,22 @@ from fastapi import FastAPI
 import app.models
 from app.core.arq import create_arq_pool
 from app.core.config import settings
+from app.core.logging import setup_logging
 from app.core.redis import get_redis_client
 from app.db.session import engine
+from app.middleware.correlation import CorrelationIdMiddleware
 from app.routers.v1.invoices import router as invoices_router
 from app.routers.v1.tenants import router as tenants_router
 from app.routers.v1.webhooks import router as webhooks_router
 
+# Initialize structured logging before application boots
+setup_logging()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Initialize the arq Redis client pool and bind to app.state
     app.state.arq_pool = await create_arq_pool()
     yield
-    # Shutdown: Cleanly drain and close the background pool and database engine
     await app.state.arq_pool.close()
     await engine.dispose()
 
@@ -28,6 +31,9 @@ app = FastAPI(
     redoc_url="/redoc",
     lifespan=lifespan,
 )
+
+# Register correlation middleware as outermost layer
+app.add_middleware(CorrelationIdMiddleware)
 
 app.include_router(tenants_router, prefix="/api/v1")
 app.include_router(invoices_router, prefix="/api/v1")
