@@ -11,6 +11,7 @@ from app.middleware.correlation import CorrelationIdMiddleware
 from app.routers.v1.invoices import router as invoices_router
 from app.routers.v1.tenants import router as tenants_router
 from app.routers.v1.webhooks import router as webhooks_router
+from app.core.metrics import export_metrics
 
 # Initialize structured logging before application boots
 setup_logging()
@@ -65,3 +66,7 @@ async def health_check():
         "redis_cache": redis_status,
         "task_queue": arq_status,
     }
+
+@app.get("/metrics", tags=["System"], include_in_schema=False)
+async def metrics():
+    return export_metrics()
