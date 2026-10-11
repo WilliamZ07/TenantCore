@@ -21,16 +21,31 @@ def upgrade() -> None:
     op.execute("ALTER TABLE invoices ENABLE ROW LEVEL SECURITY;")
     op.execute("ALTER TABLE invoices FORCE ROW LEVEL SECURITY;")
 
-    # 2. Idempotent Tenant Isolation Policy (Permissive default with explicit WITH CHECK)
+    # 2. Idempotent Tenant Isolation Policy
     op.execute("DROP POLICY IF EXISTS tenant_isolation_policy ON invoices;")
-    op.execute("""
+    op.execute(
+        """
         CREATE POLICY tenant_isolation_policy ON invoices
         FOR ALL
         USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
         WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
-    """)
+    """
+    )
 
-    # 3. Least-Privilege Role Grants
+    # 3. Ensure app_user Role Exists Before Granting Privileges
+    op.execute(
+        """
+        DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'app_user') THEN
+                CREATE ROLE app_user WITH LOGIN PASSWORD 'app_secret';
+            END IF;
+        END
+        $$;
+    """
+    )
+
+    # 4. Least-Privilege Role Grants
     op.execute("GRANT USAGE ON SCHEMA public TO app_user;")
     op.execute(
         "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO app_user;"
@@ -45,6 +60,7 @@ def upgrade() -> None:
         "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO app_user;"
     )
 
+
 def downgrade() -> None:
     # --- Revert Role Default Privileges ---
     op.execute("ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE USAGE, SELECT ON SEQUENCES FROM app_user;")
@@ -58,7 +74,3 @@ def downgrade() -> None:
     op.execute("DROP POLICY IF EXISTS tenant_isolation_policy ON invoices;")
     op.execute("ALTER TABLE invoices NO FORCE ROW LEVEL SECURITY;")
     op.execute("ALTER TABLE invoices DISABLE ROW LEVEL SECURITY;")
-
-    # --- Drop Tables in Reverse Dependency Order ---
-    # op.drop_table('invoices')
-    # op.drop_table('tenants')

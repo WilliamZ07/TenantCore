@@ -1,0 +1,100 @@
+version: "3.8"
+
+networks:
+  backend-net:
+    driver: bridge
+
+volumes:
+  pg_prod_data:
+  redis_prod_data:
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: saas_postgres_prod
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-saas_db}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres_secret}
+    volumes:
+      - pg_prod_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-saas_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - backend-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: saas_redis_prod
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_prod_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - backend-net
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: saas_api_prod
+    restart: unless-stopped
+    command: ["web"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      ENVIRONMENT: production
+      DEBUG: "False"
+      POSTGRES_SERVER: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-saas_db}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres_secret}
+      APP_DB_USER: ${APP_DB_USER:-app_user}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:-app_secret}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      WEB_CONCURRENCY: 4
+    ports:
+      - "8000:8000"
+    networks:
+      - backend-net
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: saas_worker_prod
+    restart: unless-stopped
+    command: ["worker"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      ENVIRONMENT: production
+      DEBUG: "False"
+      POSTGRES_SERVER: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-saas_db}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres_secret}
+      APP_DB_USER: ${APP_DB_USER:-app_user}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:-app_secret}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    networks:
+      - backend-net

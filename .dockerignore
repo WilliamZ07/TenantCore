@@ -10,7 +10,7 @@ htmlcov
 .env
 .venv
 venv
-alembic.ini
 tests/
-scripts/
-postgres_data
+scripts/fix_*
+scripts/patch_*
+scripts/sync_*
